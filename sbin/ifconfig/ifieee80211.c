@@ -874,6 +874,31 @@ set80211authmode(const char *val, int d, int s, const struct afswtch *rafp)
 	set80211(s, IEEE80211_IOC_AUTHMODE, mode, 0, NULL);
 }
 
+static
+DECL_CMD_FUNC(set80211assoc, val, d)
+{
+	char *temp;
+	struct sockaddr_dl sdl;
+	struct ieee80211req_mlme mlme;
+
+	temp = malloc(strlen(val) + 2); /* ':' and '\0' */
+	if (temp == NULL)
+		errx(1, "malloc failed");
+	temp[0] = ':';
+	strcpy(temp + 1, val);
+	sdl.sdl_len = sizeof(sdl);
+	link_addr(temp, &sdl);
+	free(temp);
+	if (sdl.sdl_alen != IEEE80211_ADDR_LEN)
+		errx(1, "malformed link-level address");
+
+	mlme.im_op = IEEE80211_MLME_ASSOC;
+	memcpy(mlme.im_macaddr, LLADDR(&sdl), IEEE80211_ADDR_LEN);
+	
+	set80211(s, IEEE80211_IOC_MLME, 0,
+		sizeof(mlme), &mlme);
+}
+
 static void
 set80211powersavemode(const char *val, int d, int s, const struct afswtch *rafp)
 {
@@ -5862,6 +5887,7 @@ static struct cmd ieee80211_cmds[] = {
 	DEF_CMD_ARG("station",		set80211stationname),	/* BSD/OS */
 	DEF_CMD_ARG("channel",		set80211channel),
 	DEF_CMD_ARG("authmode",		set80211authmode),
+	DEF_CMD_ARG("assoc",	set80211assoc),
 	DEF_CMD_ARG("powersavemode",	set80211powersavemode),
 	DEF_CMD("powersave",	1,	set80211powersave),
 	DEF_CMD("-powersave",	0,	set80211powersave),
