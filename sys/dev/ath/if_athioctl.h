@@ -352,8 +352,8 @@ struct ath_rx_radiotap_header {
 	u_int64_t	wr_tsf;
 	u_int8_t	wr_flags;
 	u_int8_t	wr_rate;
-	int8_t		wr_antsignal;
-	int8_t		wr_antnoise;
+	u_int8_t	wr_antsignal;
+	u_int8_t	wr_antnoise;
 	u_int8_t	wr_antenna;
 	u_int8_t	wr_pad[3];
 	u_int32_t	wr_chan_flags;

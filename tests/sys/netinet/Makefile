@@ -12,10 +12,11 @@ ATF_TESTS_C=	ip_reass_test \
 		socket_afinet \
 		tcp_connect_port_test
 
-ATF_TESTS_SH=	carp fibs fibs_test redirect divert forward output lpm arp
+ATF_TESTS_SH=	carp fibs fibs_test redirect divert forward output lpm arp wtap
 TEST_METADATA.output+=	required_programs="python"
 
-PROGS=	udp_dontroute tcp_user_cookie
+PROGS=	udp_dontroute tcp_user_cookie sta_assoc
+LIBADD.sta_assoc=		80211
 
 ${PACKAGE}FILES+=		redirect.py
 

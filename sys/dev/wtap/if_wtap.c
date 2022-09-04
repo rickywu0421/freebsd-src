@@ -236,6 +236,48 @@ wtap_beacon_config(struct wtap_softc *sc, struct ieee80211vap *vap)
 }
 
 static void
+wtap_rx_tap(struct wtap_softc *sc, uint64_t tsf, int rssi, int nf)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	const struct ieee80211_rate_table *rt = ic->ic_rt;
+	struct wtap_rx_radiotap_header *rh = &sc->sc_rx_th;
+
+	rh->wr_tsf = tsf;
+	rh->wr_flags = 0;
+	if (rt->rateCount) {
+		/* choose the fastest rate */
+		rh->wr_rate = IEEE80211_RV(rt->info[rt->rateCount - 1].dot11Rate);
+	}
+	rh->wr_antsignal = nf + rssi;
+	rh->wr_antnoise = nf;
+	rh->wr_antenna = 0;
+	rh->wr_chan_flags = IEEE80211_CHAN_CCK;
+	rh->wr_chan_freq = ic->ic_curchan->ic_freq;
+	rh->wr_chan_ieee = ic->ic_curchan->ic_ieee;
+	rh->wr_chan_maxpow = 1U << 7;
+}
+
+static void
+wtap_tx_tap(struct wtap_softc *sc, struct ieee80211_node *ni)
+{
+	struct ieee80211com *ic = &sc->sc_ic;
+	const struct ieee80211_rate_table *rt = ic->ic_rt;
+	struct wtap_tx_radiotap_header *th = &sc->sc_tx_th;
+
+	th->wt_flags = 0;
+	if (rt->rateCount) {
+		/* choose the fastest rate */
+		th->wt_rate = IEEE80211_RV(rt->info[rt->rateCount - 1].dot11Rate);
+	}
+	th->wt_txpower = ieee80211_get_node_txpower(ni);
+	th->wt_antenna = 0;
+	th->wt_chan_flags = IEEE80211_CHAN_CCK;
+	th->wt_chan_freq = ic->ic_curchan->ic_freq;
+	th->wt_chan_ieee = ic->ic_curchan->ic_ieee;
+	th->wt_chan_maxpow = 1U << 7;
+}
+
+static void
 wtap_beacon_intrp(void *arg)
 {
 	struct wtap_vap *avp = arg;
@@ -267,8 +309,14 @@ wtap_beacon_intrp(void *arg)
 	wh = mtod(m, struct ieee80211_frame *);
 	memcpy(&wh[1], &tsf, sizeof(tsf));
 
-	if (ieee80211_radiotap_active_vap(vap))
+	if (ieee80211_radiotap_active_vap(vap)) {
+		struct ieee80211_node *ni = ieee80211_ref_node(vap->iv_bss);
+		
+		wtap_tx_tap(sc, ni);
 	    ieee80211_radiotap_tx(vap, m);
+	    
+	    ieee80211_free_node(ni);
+	}
 
 #if 0
 	medium_transmit(avp->av_md, avp->id, m);
@@ -485,6 +533,7 @@ wtap_raw_xmit(struct ieee80211_node *ni, struct mbuf *m,
 	}
 
 	if (ieee80211_radiotap_active_vap(vap)) {
+		wtap_tx_tap(sc, ni);
 		ieee80211_radiotap_tx(vap, m);
 	}
 	if (m->m_flags & M_TXCB)
@@ -548,6 +597,11 @@ wtap_rx_proc(void *arg, int npending)
 #if 0
 		ieee80211_dump_pkt(ic, mtod(m, caddr_t), 0,0,0);
 #endif
+
+		if (ieee80211_radiotap_active(ic)) {
+			uint64_t tsf = wtap_hal_get_tsf(sc->hal);			
+			wtap_rx_tap(sc, tsf, 1<<7, 10);
+		}
 
 		/*
 		 * Locate the node for sender, track state, and then
@@ -613,12 +667,15 @@ wtap_transmit(struct ieee80211com *ic, struct mbuf *m)
 	    (struct ieee80211_node *) m->m_pkthdr.rcvif;
 	struct ieee80211vap *vap = ni->ni_vap;
 	struct wtap_vap *avp = WTAP_VAP(vap);
+	struct wtap_softc *sc = vap->iv_ic->ic_softc;
 
 	if(ni == NULL){
 		printf("m->m_pkthdr.rcvif is NULL we cant radiotap_tx\n");
 	}else{
-		if (ieee80211_radiotap_active_vap(vap))
+		if (ieee80211_radiotap_active_vap(vap)) {
+			wtap_tx_tap(sc, ni);
 			ieee80211_radiotap_tx(vap, m);
+		}
 	}
 	if (m->m_flags & M_TXCB)
 		ieee80211_process_callback(ni, m, 0);
@@ -671,7 +728,7 @@ wtap_attach(struct wtap_softc *sc, const uint8_t *macaddr)
 	ic->ic_phytype = IEEE80211_T_DS;
 	ic->ic_opmode = IEEE80211_M_MBSS;
 	ic->ic_caps = IEEE80211_C_MBSS | IEEE80211_C_IBSS |
-					IEEE80211_C_STA | IEEE80211_C_HOSTAP;
+					IEEE80211_C_STA | IEEE80211_C_HOSTAP | IEEE80211_C_MONITOR;
 
 	ic->ic_max_keyix = 128; /* A value read from Atheros ATH_KEYMAX */
 
