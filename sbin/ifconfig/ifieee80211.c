@@ -93,6 +93,8 @@
 #include <stddef.h>		/* NB: for offsetof */
 #include <locale.h>
 #include <langinfo.h>
+#include <wchar.h>
+#include <wctype.h>
 
 #include "ifconfig.h"
 
@@ -3445,47 +3447,52 @@ printtdmaie(const char *tag, const u_int8_t *ie, size_t ielen, int maxlen)
  * three characters with "...".
  */
 static int
-copy_essid(char buf[], size_t bufsize, const u_int8_t *essid, size_t essid_len)
+copy_essid(wchar_t buf[], size_t buflen, const u_int8_t *essid, size_t essid_len)
 {
-	const u_int8_t *p; 
-	size_t maxlen;
+	wchar_t ssid[IEEE80211_NWID_LEN + 1];
+	size_t maxlen, wlen;
 	u_int i;
 
-	if (essid_len > bufsize)
-		maxlen = bufsize;
+	if (essid_len > buflen)
+		maxlen = buflen;
 	else
 		maxlen = essid_len;
-	/* determine printable or not */
-	for (i = 0, p = essid; i < maxlen; i++, p++) {
-		if (*p < ' ' || *p > 0x7e)
+
+	/* convert SSID to UTF-32 */
+	swprintf(ssid, sizeof(wchar_t)*maxlen, L"%hs", essid);
+	wlen = wcslen(ssid);
+	
+	for (i = 0; i < wlen; i++)
+		if (iswprint(ssid[i]) == 0)
 			break;
-	}
-	if (i != maxlen) {		/* not printable, print as hex */
-		if (bufsize < 3)
-			return 0;
-		strlcpy(buf, "0x", bufsize);
-		bufsize -= 2;
-		p = essid;
-		for (i = 0; i < maxlen && bufsize >= 2; i++) {
-			sprintf(&buf[2+2*i], "%02x", p[i]);
-			bufsize -= 2;
+
+	if (i != wlen) {		/* not printable, print as hex, truncate as needed */
+		wcslcpy(buf, L"0x", sizeof(wchar_t)*2);
+		buflen -= 2;
+		for (i = 0; i < essid_len && buflen >= 2; i++) {
+			swprintf(&buf[2+2*i], sizeof(wchar_t)*2, L"%02x", essid[i]);
+			buflen -= 2;
 		}
 		if (i != essid_len)
-			memcpy(&buf[2+2*i-3], "...", 3);
+			wmemcpy(&buf[buflen-3], L"...", sizeof(wchar_t)*3);
+
+		return (2+2*i);
 	} else {			/* printable, truncate as needed */
-		memcpy(buf, essid, maxlen);
-		if (maxlen != essid_len)
-			memcpy(&buf[maxlen-3], "...", 3);
+		wmemcpy(buf, ssid, sizeof(wchar_t)*wlen);
+		if (wlen != essid_len)
+			wmemcpy(&buf[buflen-3], L"...", sizeof(wchar_t)*3);
+
+		return wlen;
 	}
-	return maxlen;
 }
+
 
 static void
 printssid(const char *tag, const u_int8_t *ie, size_t ielen, int maxlen)
 {
-	char ssid[2*IEEE80211_NWID_LEN+1];
+	wchar_t ssid[IEEE80211_NWID_LEN+1];
 
-	printf("%s<%.*s>", tag, copy_essid(ssid, maxlen, ie+2, ie[1]), ssid);
+	wprintf(L"%hs<%.*ls>", tag, copy_essid(ssid, maxlen, ie+2, ie[1]), ssid);
 }
 
 static void
@@ -3720,7 +3727,7 @@ static void
 list_scan(int s)
 {
 	uint8_t buf[24*1024];
-	char ssid[IEEE80211_NWID_LEN+1];
+	wchar_t ssid[IEEE80211_NWID_LEN+1];
 	const uint8_t *cp;
 	int len, idlen;
 
@@ -3754,10 +3761,15 @@ list_scan(int s)
 			idp = vp;
 			idlen = sr->isr_ssid_len;
 		}
-		printf("%-*.*s  %s  %3d  %3dM %4d:%-4d %4d %-4.4s"
+
+		setlocale(LC_ALL, "");
+
+		wprintf(L"%-*.*ls"
 			, IEEE80211_NWID_LEN
 			  , copy_essid(ssid, IEEE80211_NWID_LEN, idp, idlen)
 			  , ssid
+		);
+		printf("  %s  %3d  %3dM %4d:%-4d %4d %-4.4s"
 			, ether_ntoa((const struct ether_addr *) sr->isr_bssid)
 			, ieee80211_mhz2ieee(sr->isr_freq, sr->isr_flags)
 			, getmaxrate(sr->isr_rates, sr->isr_nrates)
@@ -3765,6 +3777,7 @@ list_scan(int s)
 			, sr->isr_intval
 			, getcaps(sr->isr_capinfo)
 		);
+		
 		printies(vp + sr->isr_ssid_len + sr->isr_meshid_len,
 		    sr->isr_ie_len, 24);
 		printf("\n");
