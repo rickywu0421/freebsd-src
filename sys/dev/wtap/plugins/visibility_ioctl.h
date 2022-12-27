@@ -4,6 +4,11 @@
  * Copyright (c) 2011 Monthadar Al Jaberi, TerraNet AB
  * All rights reserved.
  *
+ * Copyright (c) 2023 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by En-Wei Wu
+ * under sponsorship from the FreeBSD Foundation.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -40,13 +45,28 @@
 
 #include <sys/param.h>
 
+#ifndef MAX_NBR_WTAP
+#define MAX_NBR_WTAP (64) // We support a maximum of 64 nodes for now
+#endif
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE (MAX_NBR_WTAP / (int)(sizeof(uint32_t) * NBBY))
+#endif
+
+struct vis_map_req {
+      int id;
+      uint32_t map[ARRAY_SIZE];
+};
+
 struct link {
       int	op; //0 remove, 1 link
       int 	id1;
       int	id2;
 };
 
-#define VISIOCTLOPEN _IOW('W', 3, int) // 0 close, 1 open
-#define VISIOCTLLINK _IOW('W', 4, struct link) //
+#define VISIOCTLSETOPEN _IOW('W', 4, int) // 0 close, 1 open
+#define VISIOCTLSETLINK _IOW('W', 5, struct link) //
+#define VISIOCTLGETOPEN _IOR('R', 6, int)
+#define VISIOCTLGETMAP  _IOWR('R', 7, struct vis_map_req)
 
 #endif

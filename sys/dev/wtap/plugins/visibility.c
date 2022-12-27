@@ -4,6 +4,11 @@
  * Copyright (c) 2010-2011 Monthadar Al Jaberi, TerraNet AB
  * All rights reserved.
  *
+ * Copyright (c) 2023 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by En-Wei Wu
+ * under sponsorship from the FreeBSD Foundation.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -199,6 +204,20 @@ del_link(struct visibility_plugin *vis_plugin, struct link *l)
 #endif
 }
 
+static int
+get_link(struct visibility_plugin *vis_plugin, struct vis_map_req *req)
+{
+	struct wtap_hal *hal = vis_plugin->base.wp_hal;
+
+	if (req->id < 0 || req->id >= MAX_NBR_WTAP ||
+		 !isset(hal->hal_devs_set, req->id))
+		return -1;
+
+	memcpy(&req->map, &vis_plugin->pl_node[req->id], sizeof(struct vis_map));
+
+	return 0;
+}
+
 int
 vis_ioctl(struct cdev *sdev, u_long cmd, caddr_t data,
     int fflag, struct thread *td)
@@ -207,19 +226,20 @@ vis_ioctl(struct cdev *sdev, u_long cmd, caddr_t data,
 	    (struct visibility_plugin *) sdev->si_drv1;
 	struct wtap_hal *hal = vis_plugin->base.wp_hal;
 	struct link l;
+	struct vis_map_req *req;
 	int op;
 	int error = 0;
 
 	CURVNET_SET(CRED_TO_VNET(curthread->td_ucred));
 	switch(cmd) {
-	case VISIOCTLOPEN:
+	case VISIOCTLSETOPEN:
 		op =  *(int *)data; 
 		if(op == 0)
 			medium_close(hal->hal_md);
 		else
 			medium_open(hal->hal_md);
 		break;
-	case VISIOCTLLINK:
+	case VISIOCTLSETLINK:
 		l = *(struct link *)data;
 		if(l.op == 0)
 			del_link(vis_plugin, &l);
@@ -228,6 +248,16 @@ vis_ioctl(struct cdev *sdev, u_long cmd, caddr_t data,
 #if 0
 		printf("op=%d, id1=%d, id2=%d\n", l.op, l.id1, l.id2);
 #endif
+		break;
+	case VISIOCTLGETOPEN:
+		memcpy(data, &hal->hal_md->open, sizeof(int));
+		break;
+	case VISIOCTLGETMAP:
+		req = (struct vis_map_req *)data;
+		
+		if (get_link(vis_plugin, req) < 0)
+			error = EINVAL;
+
 		break;
 	default:
 		DWTAP_PRINTF("Unknown WTAP IOCTL\n");
