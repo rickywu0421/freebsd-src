@@ -4,6 +4,11 @@
  * Copyright (c) 2011 Monthadar Al Jaberi, TerraNet AB
  * All rights reserved.
  *
+ * Copyright (c) 2023 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by En-Wei Wu
+ * under sponsorship from the FreeBSD Foundation.
+ * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -37,8 +42,6 @@
 #include "visibility_ioctl.h"
 
 #define CDEV_GET_SOFTC(x) (x)->si_drv1
-
-#define ARRAY_SIZE (32) //We support a maximum of 1024 nodes for now
 
 struct vis_map {
 	uint32_t map[ARRAY_SIZE]; 

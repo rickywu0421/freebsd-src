@@ -4,6 +4,11 @@
  * Copyright (c) 2010-2011 Monthadar Al Jaberi, TerraNet AB
  * All rights reserved.
  *
+ * Copyright (c) 2023 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by En-Wei Wu
+ * under sponsorship from the FreeBSD Foundation.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -65,6 +70,7 @@ init_hal(struct wtap_hal *hal)
 {
 
 	DWTAP_PRINTF("%s\n", __func__);
+	memset(hal->hal_devs_set, 0, sizeof(uint32_t) * ARRAY_SIZE);
 	mtx_init(&hal->hal_mtx, "wtap_hal mtx", NULL, MTX_DEF | MTX_RECURSE);
 
 	hal->hal_md = (struct wtap_medium *)malloc(sizeof(struct wtap_medium),
@@ -107,7 +113,7 @@ deinit_hal(struct wtap_hal *hal)
 int32_t
 new_wtap(struct wtap_hal *hal, int32_t id)
 {
-	static const uint8_t mac_pool[64][IEEE80211_ADDR_LEN] = {
+	static const uint8_t mac_pool[MAX_NBR_WTAP][IEEE80211_ADDR_LEN] = {
 	    {0,152,154,152,150,151},
 	    {0,152,154,152,150,152},
 	    {0,152,154,152,150,153},
@@ -175,12 +181,37 @@ new_wtap(struct wtap_hal *hal, int32_t id)
 	    };
 
 	DWTAP_PRINTF("%s\n", __func__);
+
+	/* When id < 0, automate the assignmanet of wtap device by 
+	 * finding the least significant clear bit in hal->hal_devs_set
+	 */
+	if (id < 0) {
+		int i;
+		for (i = 0; i < MAX_NBR_WTAP; i++) {
+			if (!isset(hal->hal_devs_set, i)) {
+				id = i;
+				break;
+			}
+		}
+		
+		if (i == MAX_NBR_WTAP) {
+			DWTAP_PRINTF("%s: wtap device is full\n", __func__);
+			return -1;
+		}
+	}
+
 	uint8_t const *macaddr = mac_pool[id];
-	if(hal->hal_devs[id] != NULL){
+	if (isset(hal->hal_devs_set, id)) {
 		printf("error, wtap_id=%d already created\n", id);
 		return -1;
 	}
 
+	if (id >= MAX_NBR_WTAP) {
+		DWTAP_PRINTF("error, wtap_id=%d must be between 0 and 63\n", id);
+		return -1;
+	}
+
+	setbit(hal->hal_devs_set, id);
 	hal->hal_devs[id] = (struct wtap_softc *)malloc(
 	    sizeof(struct wtap_softc), M_WTAP, M_NOWAIT | M_ZERO);
 	hal->hal_devs[id]->sc_md = hal->hal_md;
@@ -196,7 +227,7 @@ new_wtap(struct wtap_hal *hal, int32_t id)
 		return -1;
 	}
 
-	return 0;
+	return id;
 }
 
 int32_t
@@ -204,13 +235,21 @@ free_wtap(struct wtap_hal *hal, int32_t id)
 {
 
 	DWTAP_PRINTF("%s\n", __func__);
-	if(hal->hal_devs[id] == NULL){
+
+	if (id < 0 || id >= MAX_NBR_WTAP) {
+		DWTAP_PRINTF("error, wtap_id=%d must be between 0 and 63\n", id);
+		return -1;
+	}
+
+	if(!isset(hal->hal_devs_set, id)){
 		printf("error, wtap_id=%d never created\n", id);
 		return -1;
 	}
 
 	if(wtap_detach(hal->hal_devs[id]))
 		printf("%s, cant alloc new wtap\n", __func__);
+
+	clrbit(hal->hal_devs_set, id);
 	mtx_destroy(&hal->hal_devs[id]->sc_mtx);
 	free(hal->hal_devs[id], M_WTAP);
 	hal->hal_devs[id] = NULL;
