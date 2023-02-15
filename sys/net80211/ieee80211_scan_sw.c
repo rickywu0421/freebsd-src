@@ -860,6 +860,8 @@ scan_end(struct ieee80211_scan_state *ss, int scandone)
 		ss->ss_ops->scan_restart(ss, vap);	/* XXX? */
 		ieee80211_runtask(ic, &ss_priv->ss_scan_start);
 		IEEE80211_UNLOCK(ic);
+
+		ieee80211_notify_scan_done();
 		return;
 	}
 
