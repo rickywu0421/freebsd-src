@@ -719,6 +719,25 @@ bsd_route_overflow(int sock, void *ctx, struct bsd_driver_global *global)
 }
 #endif /* SO_RERROR */
 
+/**
+ * wpa_driver_bsd_scan_timeout - Scan timeout to report scan completion
+ * @eloop_ctx: Driver private data
+ * @timeout_ctx: ctx argument given to wpa_driver_bsd_init()
+ *
+ * This function can be used as registered timeout when starting a scan to
+ * generate a scan completed event if the driver does not report this.
+ */
+static void
+wpa_driver_bsd_scan_timeout(void *eloop_ctx, void *timeout_ctx)
+{
+	struct bsd_driver_data *drv = eloop_ctx;
+
+	wpa_printf(MSG_DEBUG, "scan timeout, try to get scan results");
+
+	wpa_supplicant_event(drv->ctx, EVENT_SCAN_RESULTS, 
+							NULL);
+}
+
 static void
 bsd_wireless_event_receive(int sock, void *ctx, void *sock_ctx)
 {
@@ -774,6 +793,8 @@ bsd_wireless_event_receive(int sock, void *ctx, void *sock_ctx)
 		case RTM_IEEE80211_SCAN:
 			if (drv->is_ap)
 				break;
+			eloop_cancel_timeout(wpa_driver_bsd_scan_timeout,
+								drv, drv->ctx);
 			wpa_supplicant_event(drv->ctx, EVENT_SCAN_RESULTS,
 					     NULL);
 			break;
@@ -1290,6 +1311,7 @@ wpa_driver_bsd_scan(void *priv, struct wpa_driver_scan_params *params)
 #ifdef IEEE80211_IOC_SCAN_MAX_SSID
 	struct ieee80211_scan_req sr;
 	int i;
+	int ret, res, timeout;
 #endif /* IEEE80211_IOC_SCAN_MAX_SSID */
 
 	if (bsd_set_mediaopt(drv, IFM_OMASK, 0 /* STA */) < 0) {
@@ -1341,8 +1363,33 @@ wpa_driver_bsd_scan(void *priv, struct wpa_driver_scan_params *params)
 			  sr.sr_ssid[i].len);
 	}
 
-	/* NB: net80211 delivers a scan complete event so no need to poll */
-	return set80211var(drv, IEEE80211_IOC_SCAN_REQ, &sr, sizeof(sr));
+	ret = set80211var(drv, IEEE80211_IOC_SCAN_REQ, &sr, sizeof(sr));
+	
+	/* Sometimes wpa_supplicant can never initiate a scan request to net80211
+	 * since net80211 has already fired the scan process, and sometimes it never 
+	 * ends. In this case, net80211 will never pass the scan-result event to us.
+	 * Add a timer to read scan results if the scan request failed.
+	 */
+	if (ret) {
+		wpa_printf(MSG_DEBUG, "failed to request a scan: %s",
+			strerror(ret));
+
+		timeout = 3;
+
+		res = eloop_deplete_timeout(timeout, 0,
+				wpa_driver_bsd_scan_timeout,
+				drv, drv->ctx);
+		if (res == -1) {
+			wpa_printf(MSG_DEBUG,
+			 "setting scan results timer - %d sec ", timeout);
+
+			eloop_register_timeout(timeout, 0,
+				wpa_driver_bsd_scan_timeout,
+				drv, drv->ctx);
+		}
+	}
+
+	return ret;
 #else /* IEEE80211_IOC_SCAN_MAX_SSID */
 	/* set desired ssid before scan */
 	if (bsd_set_ssid(drv, params->ssids[0].ssid,
@@ -1629,6 +1676,9 @@ static void
 wpa_driver_bsd_deinit(void *priv)
 {
 	struct bsd_driver_data *drv = priv;
+
+	eloop_cancel_timeout(wpa_driver_bsd_scan_timeout,
+								drv, drv->ctx);
 
 	if (drv->ifindex != 0 && !drv->if_removed) {
 		wpa_driver_bsd_set_wpa(drv, 0);
