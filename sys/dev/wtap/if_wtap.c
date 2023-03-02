@@ -302,6 +302,7 @@ wtap_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		switch (vap->iv_opmode) {
 		case IEEE80211_M_IBSS:
 		case IEEE80211_M_MBSS:
+		case IEEE80211_M_HOSTAP:
 			/*
 			 * Stop any previous beacon callout. This may be
 			 * necessary, for example, when an ibss merge
@@ -426,6 +427,15 @@ wtap_parent(struct ieee80211com *ic)
 	struct wtap_softc *sc = ic->ic_softc;
 
 	if (ic->ic_nrunning > 0) {
+		/*
+		 * There is a race of issuing scanning process between
+		 * IF UP and wpa_supplicant(8). The pause() here is to
+		 * delay the issuing of scanning process in IF up
+		 * and let wpa_supplicant(8) win the race. (so the scan
+		 * request and scan flags in wpa_supplicant(8) can pass
+		 * into net80211 and take effect)
+		 */
+		pause("wtap_parent", hz);
 		sc->up = 1;
 		ieee80211_start_all(ic);
 	} else
@@ -468,6 +478,19 @@ wtap_raw_xmit(struct ieee80211_node *ni, struct mbuf *m,
 #endif
 	struct ieee80211vap	*vap = ni->ni_vap;
 	struct wtap_vap 	*avp = WTAP_VAP(vap);
+	struct wtap_softc	*sc = vap->iv_ic->ic_softc;
+	struct ieee80211_frame *wh;
+	int subtype, tsf;
+
+	wh = mtod(m, struct ieee80211_frame *);
+	subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+
+	/* Insert TSFT if the frame is a probe response */
+	if (subtype == IEEE80211_FC0_SUBTYPE_PROBE_RESP) {
+		tsf = wtap_hal_get_tsf(sc->hal);
+		wh = mtod(m, struct ieee80211_frame *);
+		memcpy(&wh[1], &tsf, sizeof(tsf));
+	}
 
 	if (ieee80211_radiotap_active_vap(vap)) {
 		ieee80211_radiotap_tx(vap, m);
@@ -598,10 +621,30 @@ wtap_transmit(struct ieee80211com *ic, struct mbuf *m)
 	    (struct ieee80211_node *) m->m_pkthdr.rcvif;
 	struct ieee80211vap *vap = ni->ni_vap;
 	struct wtap_vap *avp = WTAP_VAP(vap);
+	struct ieee80211_key *k = NULL;
+	struct ieee80211_frame *wh = NULL;
 
 	if(ni == NULL){
 		printf("m->m_pkthdr.rcvif is NULL we cant radiotap_tx\n");
 	}else{
+		wh = mtod(m, struct ieee80211_frame *);
+
+		if (IEEE80211_IS_PROTECTED(wh)) {
+			k = ieee80211_crypto_encap(ni, m);
+			
+			/*
+			 * This can happen when the key is yanked after the
+			 * frame was queued.  Just discard the frame; the
+			 * 802.11 layer counts failures and provides
+			 * debugging/diagnostics.
+			 */
+			if (k == NULL) {
+				m_free(m);
+				ieee80211_free_node(ni);
+				return 0;
+			}
+		}
+
 		if (ieee80211_radiotap_active_vap(vap))
 			ieee80211_radiotap_tx(vap, m);
 	}
@@ -655,7 +698,12 @@ wtap_attach(struct wtap_softc *sc, const uint8_t *macaddr)
 	ic->ic_name = sc->name;
 	ic->ic_phytype = IEEE80211_T_DS;
 	ic->ic_opmode = IEEE80211_M_MBSS;
-	ic->ic_caps = IEEE80211_C_MBSS | IEEE80211_C_IBSS;
+	ic->ic_caps =
+		  IEEE80211_C_MBSS 		/* mesh point link mode */
+		| IEEE80211_C_IBSS 		/* ibss, nee adhoc, mode */
+		| IEEE80211_C_STA 		/* station mode */
+		| IEEE80211_C_HOSTAP 	/* hostap mode */
+		| IEEE80211_C_WPA;		/* capable of WPA1+WPA2 */
 
 	ic->ic_max_keyix = 128; /* A value read from Atheros ATH_KEYMAX */
 
