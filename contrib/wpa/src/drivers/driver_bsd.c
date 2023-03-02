@@ -1092,6 +1092,13 @@ bsd_deinit(void *priv)
 }
 
 static int
+bsd_commit(void *priv)
+{
+	return bsd_ctrl_iface(priv, 1);
+}
+
+
+static int
 bsd_set_sta_authorized(void *priv, const u8 *addr,
 		       unsigned int total_flags, unsigned int flags_or,
 		       unsigned int flags_and)
@@ -1834,6 +1841,7 @@ const struct wpa_driver_ops wpa_driver_bsd_ops = {
 	.sta_disassoc		= bsd_sta_disassoc,
 	.sta_deauth		= bsd_sta_deauth,
 	.sta_set_flags		= bsd_set_sta_authorized,
+	.commit			= bsd_commit,
 #else /* HOSTAPD */
 	.init2			= wpa_driver_bsd_init,
 	.deinit			= wpa_driver_bsd_deinit,
