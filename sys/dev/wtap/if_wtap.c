@@ -302,6 +302,7 @@ wtap_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		switch (vap->iv_opmode) {
 		case IEEE80211_M_IBSS:
 		case IEEE80211_M_MBSS:
+		case IEEE80211_M_HOSTAP:
 			/*
 			 * Stop any previous beacon callout. This may be
 			 * necessary, for example, when an ibss merge
@@ -426,6 +427,7 @@ wtap_parent(struct ieee80211com *ic)
 	struct wtap_softc *sc = ic->ic_softc;
 
 	if (ic->ic_nrunning > 0) {
+		pause("wtap_parent", hz);
 		sc->up = 1;
 		ieee80211_start_all(ic);
 	} else
@@ -468,6 +470,19 @@ wtap_raw_xmit(struct ieee80211_node *ni, struct mbuf *m,
 #endif
 	struct ieee80211vap	*vap = ni->ni_vap;
 	struct wtap_vap 	*avp = WTAP_VAP(vap);
+	struct wtap_softc	*sc = vap->iv_ic->ic_softc;
+	struct ieee80211_frame *wh;
+	int subtype, tsf;
+
+	wh = mtod(m, struct ieee80211_frame *);
+	subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+
+	/* Insert TSFT if the frame is probe response */
+	if (subtype == IEEE80211_FC0_SUBTYPE_PROBE_RESP) {
+		tsf = wtap_hal_get_tsf(sc->hal);
+		wh = mtod(m, struct ieee80211_frame *);
+		memcpy(&wh[1], &tsf, sizeof(tsf));
+	}
 
 	if (ieee80211_radiotap_active_vap(vap)) {
 		ieee80211_radiotap_tx(vap, m);
@@ -655,7 +670,8 @@ wtap_attach(struct wtap_softc *sc, const uint8_t *macaddr)
 	ic->ic_name = sc->name;
 	ic->ic_phytype = IEEE80211_T_DS;
 	ic->ic_opmode = IEEE80211_M_MBSS;
-	ic->ic_caps = IEEE80211_C_MBSS | IEEE80211_C_IBSS;
+	ic->ic_caps = IEEE80211_C_MBSS | IEEE80211_C_IBSS | 
+					IEEE80211_C_STA | IEEE80211_C_HOSTAP | IEEE80211_C_WPA;
 
 	ic->ic_max_keyix = 128; /* A value read from Atheros ATH_KEYMAX */
 
