@@ -141,6 +141,32 @@ wtap_medium_enqueue(struct wtap_vap *avp, struct mbuf *m)
 	return medium_transmit(avp->av_md, avp->id, m);
 }
 
+void
+wtap_reset_tsf(struct wtap_vap *avp, uint64_t tsf)
+{
+	uint64_t old_tsf, delta;
+
+	old_tsf = wtap_get_tsf(avp);
+	delta = abs(tsf - old_tsf);
+
+	if (tsf < old_tsf)
+		avp->av_tsf_offset -= delta;
+	else
+		avp->av_tsf_offset += delta;
+}
+
+uint64_t
+wtap_get_tsf(struct wtap_vap *avp)
+{
+	struct timeval tv;
+	uint64_t cur;
+
+	getmicrotime(&tv);
+	cur = tv.tv_sec * 1000000 + tv.tv_usec;
+
+	return (int64_t)cur + avp->av_tsf_offset;
+}
+
 /*
  * Intercept management frames to collect beacon rssi data
  * and to do ibss merges.
@@ -166,7 +192,7 @@ wtap_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m,
 		if (vap->iv_opmode == IEEE80211_M_IBSS &&
 		    vap->iv_state == IEEE80211_S_RUN &&
 		    ieee80211_ibss_merge_check(ni)) {
-			uint64_t tsf = wtap_hal_get_tsf(sc->hal);
+			uint64_t tsf = wtap_get_tsf(avp);
 
 			/*
 			 * Handle ibss merge as needed; check the tsf on the
@@ -242,7 +268,9 @@ wtap_beacon_intrp(void *arg)
 	struct wtap_softc *sc = vap->iv_ic->ic_softc;
 	struct ieee80211_frame *wh;
 	struct mbuf *m;
-	uint64_t tsf;
+	const struct ieee80211_txparam *tp = avp->bf_node->ni_txparam;
+	uint64_t tsf, rx_tsf, airtime, until_next_tbtt, bc_intval_us;
+	uint8_t bitrate;
 
 	if (vap->iv_state < IEEE80211_S_RUN) {
 	    DWTAP_PRINTF("Skip beacon, not running, state %d", vap->iv_state);
@@ -261,19 +289,58 @@ wtap_beacon_intrp(void *arg)
 		    " changed size.\n",__func__);
 	}
 
-	/* Get TSF from HAL, and insert it into beacon frame */
-	tsf = wtap_hal_get_tsf(sc->hal);
+	/* 
+	 * Insert TSF into timestamp field in beacon frame,
+	 * and we reimburse the airtime to the TSF to reflect
+	 * the TX path delay.
+	 * RX TSF = TX TSF + airtime (we assum mactime = 0)
+	 */
+	tsf = wtap_get_tsf(avp);
+	bitrate = IEEE80211_RV(tp->mgmtrate);
+	/* Micro-seconds elapsed before the first bit of timestamp arrives */
+	airtime = 24 * 8 * 2 / txrate;
+	rx_tsf = tsf + airtime;
+
 	wh = mtod(m, struct ieee80211_frame *);
-	memcpy(&wh[1], &tsf, sizeof(tsf));
+	memcpy(&wh[1], &rx_tsf, sizeof(rx_tsf));
 
 	if (ieee80211_radiotap_active_vap(vap))
 	    ieee80211_radiotap_tx(vap, m);
 
+#define TU_TO_USEC(t) (((uint64_t)(t)) << 10)
+	/* 
+	 * Beacon frame TX may be delayed due to many reasons.
+	 * Make sure the subsequent beacon frame will be scheduled at
+	 * normal TBTT.
+	 */
+	bc_intval_us = TU_TO_USEC(ni->ni_intval);
+	until_next_tbtt = bc_intval_us - (tsf % bc_intval_us);
+
+#undef 	TU_TO_USEC
+
+	DWTAP_PRINTF("%s: %s: tsf=%llu (%llu TU), mgmtrate=%u, "
+					 "airtime=%llu (%llu TU), rx_tsf=%llu (%llu TU)\n" 
+			__func__, 
+			ieee80211_mgt_subtype_name(subtype),
+			ieee80211_get_vap_ifname(vap),
+			tsf,
+			(tsf >> 10),
+			tp->mgmtrate,
+			airtime,
+			(airtime >> 10));
+
+	DWTAP_PRINTF("%s: %s: bcintval=%u, until_next_tbtt=%llu (%llu TU)\n",
+		__func__, 
+		ieee80211_get_vap_ifname(vap),
+		ni->ni_intval,
+		until_next_tbtt,
+		(until_next_tbtt >> 10));
 #if 0
 	medium_transmit(avp->av_md, avp->id, m);
 #endif
 	wtap_medium_enqueue(avp, m);
-	callout_schedule(&avp->av_swba, avp->av_bcinterval);
+	callout_schedule(&avp->av_swba, 
+					msecs_to_ticks(until_next_tbtt / 1000));
 }
 
 static int
@@ -331,9 +398,13 @@ wtap_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			wtap_beacon_config(sc, vap);
 
 			/* Start TSF timer from now, and start s/w beacon alert */
-			wtap_hal_reset_tsf(sc->hal);
-			callout_reset(&avp->av_swba, avp->av_bcinterval,
+			wtap_reset_tsf(avp, 0);
+			
+#define TU_TO_USEC(t) (((uint64_t)(t)) << 10)
+			callout_reset(&avp->av_swba, 
+				msecs_to_ticks(TU_TO_USEC(ni->ni_intval) / 1000),
 			    wtap_beacon_intrp, vap);
+#undef	TU_TO_USEC
 			break;
 		default:
 			goto bad;
@@ -375,7 +446,7 @@ wtap_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ],
 	avp = malloc(sizeof(struct wtap_vap), M_80211_VAP, M_WAITOK | M_ZERO);
 	avp->id = sc->id;
 	avp->av_md = sc->sc_md;
-	avp->av_bcinterval = msecs_to_ticks(BEACON_INTRERVAL + 100*sc->id);
+	avp->av_tsf_offset = 0;
 	vap = (struct ieee80211vap *) avp;
 	error = ieee80211_vap_setup(ic, vap, name, unit, opmode,
 	    flags | IEEE80211_CLONE_NOBEACONS, bssid);
@@ -472,16 +543,46 @@ wtap_raw_xmit(struct ieee80211_node *ni, struct mbuf *m,
 	struct wtap_vap 	*avp = WTAP_VAP(vap);
 	struct wtap_softc	*sc = vap->iv_ic->ic_softc;
 	struct ieee80211_frame *wh;
-	int subtype, tsf;
+	const struct ieee80211_txparam *tp = ni->ni_txparam;
+	uint64_t tsf, rx_tsf, airtime;
+	uint8_t bitrate;
+	int subtype;
 
 	wh = mtod(m, struct ieee80211_frame *);
 	subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
 
-	/* Insert TSFT if the frame is probe response */
+	DWTAP_PRINTF("%s: %s: ni=%6D, bssid=%6D, subtype=%s\n"
+		__func__,
+		ieee80211_get_vap_ifname(vap),
+		ni->ni_macaddr, ":",
+		ni->ni_bssid, ":",
+		ieee80211_mgt_subtype_name(subtype));
+
+
 	if (subtype == IEEE80211_FC0_SUBTYPE_PROBE_RESP) {
-		tsf = wtap_hal_get_tsf(sc->hal);
+		/* 
+		 * Insert TSF into timestamp field in beacon frame. 
+		 * RX TSF = TX TSF + airtime (we assum mactime = 0)
+		 */
+		tsf = wtap_get_tsf(avp);
+		bitrate = IEEE80211_RV(tp->mgmtrate);
+		/* Micro-seconds elapsed before the first bit of timestamp arrives at MAC */
+		airtime = 24 * 8 * 2 / txrate;
+		rx_tsf = tsf + airtime;
+
+		DWTAP_PRINTF("%s: %s: tsf=%llu (%llu TU), mgmtrate=%u, "
+					 "airtime=%llu (%llu TU), rx_tsf=%llu (%llu TU)\n" 
+			__func__, 
+			ieee80211_mgt_subtype_name(subtype),
+			ieee80211_get_vap_ifname(vap),
+			tsf,
+			(tsf >> 10),
+			tp->mgmtrate,
+			airtime,
+			(airtime >> 10));
+
 		wh = mtod(m, struct ieee80211_frame *);
-		memcpy(&wh[1], &tsf, sizeof(tsf));
+		memcpy(&wh[1], &rx_tsf, sizeof(rx_tsf));
 	}
 
 	if (ieee80211_radiotap_active_vap(vap)) {

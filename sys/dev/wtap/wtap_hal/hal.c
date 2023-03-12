@@ -255,33 +255,3 @@ free_wtap(struct wtap_hal *hal, int32_t id)
 	hal->hal_devs[id] = NULL;
 	return 0;
 }
-
-void
-wtap_hal_timer_intr(void *arg)
-{
-	struct wtap_hal *hal = arg;
-	uint32_t intval = hal->hw.timer_intr_intval;
-
-	hal->hw.tsf += ticks_to_msecs(intval);
-
-	callout_schedule(&hal->hw.timer_intr, intval);
-}
-
-void
-wtap_hal_reset_tsf(struct wtap_hal *hal)
-{
-	mtx_lock(&hal->hal_mtx);
-
-	callout_stop(&hal->hw.timer_intr);
-	hal->hw.tsf = 0;
-	callout_reset(&hal->hw.timer_intr, hal->hw.timer_intr_intval,
-	    wtap_hal_timer_intr, hal);
-
-	mtx_unlock(&hal->hal_mtx);
-}
-
-uint64_t
-wtap_hal_get_tsf(struct wtap_hal *hal)
-{
-	return (hal->hw.tsf);
-}

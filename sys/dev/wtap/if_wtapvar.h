@@ -97,8 +97,6 @@
 #define ARRAY_SIZE (MAX_NBR_WTAP / (int)(sizeof(uint32_t) * NBBY))
 #endif
 
-#define BEACON_INTRERVAL (1000)
-
 MALLOC_DECLARE(M_WTAP);
 MALLOC_DECLARE(M_WTAP_PACKET);
 MALLOC_DECLARE(M_WTAP_BEACON);
@@ -129,7 +127,7 @@ struct wtap_vap {
 	struct mbuf *beacon;			/* beacon */
 	struct ieee80211_node	*bf_node;	/* pointer to the node */
 	struct callout		av_swba;	/* software beacon alert */
-	uint32_t		av_bcinterval;	/* beacon interval */
+	int64_t			av_tsf_offset;	/* tsf = now + av_tsf_offset (in us) */
 	void (*av_recv_mgmt)(struct ieee80211_node *,
 	    struct mbuf *, int, const struct ieee80211_rx_stats *, int, int);
 	int (*av_newstate)(struct ieee80211vap *,
@@ -162,6 +160,8 @@ struct wtap_softc {
 
 int32_t	wtap_attach(struct wtap_softc *, const uint8_t *macaddr);
 int32_t	wtap_detach(struct wtap_softc *);
+void	wtap_reset_tsf(struct wtap_vap *, uint64_t);
+uint64_t 	wtap_get_tsf(struct wtap_vap *);
 void	wtap_resume(struct wtap_softc *);
 void	wtap_suspend(struct wtap_softc *);
 void	wtap_shutdown(struct wtap_softc *);
