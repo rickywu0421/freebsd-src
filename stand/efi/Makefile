@@ -8,6 +8,7 @@ SUBDIR.${MK_FDT}+=	fdt
 SUBDIR.yes+=	.WAIT
 
 SUBDIR.yes+=	boot1 gptboot
+SUBDIR.yes+=	s4_activator
 
 SUBDIR.${MK_FORTH}+= loader_4th
 SUBDIR.${MK_LOADER_LUA}+= loader_lua
